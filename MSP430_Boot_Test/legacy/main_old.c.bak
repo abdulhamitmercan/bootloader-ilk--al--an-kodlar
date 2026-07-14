@@ -1,0 +1,808 @@
+#include <msp430.h>
+#include <stdint.h>
+
+#include "HAL.h"
+#include "communication/softuart.h"
+
+/* =========================================================
+ * UART protokolü
+ * ========================================================= */
+
+#define H1              0xAA
+#define H2              0x55
+
+#define CMD_ERASE       0x02
+#define CMD_WRITE       0x03
+#define CMD_DONE        0x04
+
+#define RSP_ACK         0x80
+#define RSP_NACK        0x81
+
+#define WRITE_LEN       16U
+
+
+/* =========================================================
+ * MSP430F67751 flash haritası
+ * ========================================================= */
+
+/*
+ * Uygulamanın yazılmaya başladığı adres.
+ */
+#define APP_START               0x0000E000UL
+
+/*
+ * acCharger sanal vektör tablosu.
+ * Reset vektörü APP_VECTOR_RESET adresinden dinamik okunur.
+ */
+#define APP_VECTOR_START        0x0000DF80UL
+#define APP_VECTOR_END          0x0000E000UL
+#define APP_VECTOR_RESET        0x0000DFFEUL
+#define APP_VECTOR_SEGMENT      0x0000DE00UL
+
+#define RAM_VECTOR_START        0x00001C00UL
+#define VECTOR_TABLE_SIZE       0x0080U
+
+/*
+ * Flash sonu exclusive:
+ *
+ * 0x10000 + 0x1BFF8 = 0x2BFF8
+ */
+#define FLASH_END_EXCLUSIVE     0x0002BFF8UL
+
+#define FLASH_SEGMENT_SIZE      512UL
+
+/*
+ * Bootloader interrupt ve reset vektör segmenti.
+ *
+ * Bu alan OTA sırasında silinmeyecek.
+ */
+#define PROTECTED_START         0x0000FE00UL
+#define PROTECTED_END           0x00010000UL
+
+
+/* =========================================================
+ * Parser değişkenleri
+ * ========================================================= */
+
+static uint8_t parserState = 0;
+static uint8_t packet[32];
+static uint8_t packetIndex = 0;
+
+static uint32_t lastErasedSegment = 0xFFFFFFFFUL;
+
+
+/* =========================================================
+ * CRC16-CCITT
+ * ========================================================= */
+
+static uint16_t crc16_update(
+    uint16_t crc,
+    uint8_t data)
+{
+    uint8_t i;
+
+    crc ^= ((uint16_t)data << 8);
+
+    for (i = 0; i < 8; i++)
+    {
+        if (crc & 0x8000U)
+        {
+            crc =
+                (uint16_t)((crc << 1) ^ 0x1021U);
+        }
+        else
+        {
+            crc =
+                (uint16_t)(crc << 1);
+        }
+    }
+
+    return crc;
+}
+
+
+static uint16_t crc16_calculate(
+    const uint8_t *buffer,
+    uint8_t length)
+{
+    uint16_t crc = 0xFFFFU;
+    uint8_t i;
+
+    for (i = 0; i < length; i++)
+    {
+        crc =
+            crc16_update(
+                crc,
+                buffer[i]);
+    }
+
+    return crc;
+}
+
+
+/* =========================================================
+ * UART cevapları
+ * ========================================================= */
+
+static void sendResponse(
+    uint8_t response,
+    uint8_t parameter,
+    uint8_t data1,
+    uint8_t data2)
+{
+    uint8_t tx[8];
+
+    tx[0] = (uint8_t)'b';
+    tx[1] = response;
+    tx[2] = 0x00;
+    tx[3] = parameter;
+    tx[4] = data1;
+    tx[5] = data2;
+
+    tx[6] =
+        tx[0] ^
+        tx[1] ^
+        tx[2] ^
+        tx[3] ^
+        tx[4] ^
+        tx[5];
+
+    tx[7] = (uint8_t)'k';
+
+    softuart_write(tx, 8);
+}
+
+
+static void sendAck(
+    uint8_t command,
+    uint8_t data1,
+    uint8_t data2)
+{
+    sendResponse(
+        RSP_ACK,
+        command,
+        data1,
+        data2);
+}
+
+
+static void sendNack(uint8_t reason)
+{
+    sendResponse(
+        RSP_NACK,
+        reason,
+        0x00,
+        0x00);
+}
+
+
+/* =========================================================
+ * Paketten 32-bit adres oku
+ * ========================================================= */
+
+static uint32_t readPacketAddress(void)
+{
+    uint32_t address = 0;
+
+    address |=
+        ((uint32_t)packet[3] << 24);
+
+    address |=
+        ((uint32_t)packet[4] << 16);
+
+    address |=
+        ((uint32_t)packet[5] << 8);
+
+    address |=
+        ((uint32_t)packet[6]);
+
+    return address;
+}
+
+
+/* =========================================================
+ * Adres güvenlik kontrolleri
+ * ========================================================= */
+
+static uint8_t rangesOverlap(
+    uint32_t start1,
+    uint32_t end1,
+    uint32_t start2,
+    uint32_t end2)
+{
+    if (start1 >= end2)
+    {
+        return 0;
+    }
+
+    if (end1 <= start2)
+    {
+        return 0;
+    }
+
+    return 1;
+}
+
+
+static uint8_t addressAllowed(
+    uint32_t address,
+    uint8_t length)
+{
+    uint32_t endAddress;
+    uint8_t isVectorRange;
+    uint8_t isApplicationRange;
+
+    if (length == 0U)
+    {
+        return 0;
+    }
+
+    endAddress = address + (uint32_t)length;
+
+    if (endAddress < address)
+    {
+        return 0;
+    }
+
+    isVectorRange =
+        (address >= APP_VECTOR_START) &&
+        (endAddress <= APP_VECTOR_END);
+
+    isApplicationRange =
+        (address >= APP_START) &&
+        (endAddress <= FLASH_END_EXCLUSIVE);
+
+    if (!isVectorRange && !isApplicationRange)
+    {
+        return 0;
+    }
+
+    if (rangesOverlap(
+            address,
+            endAddress,
+            PROTECTED_START,
+            PROTECTED_END))
+    {
+        return 0;
+    }
+
+    return 1;
+}
+
+
+/* =========================================================
+ * 20-bit flash erişimi
+ * ========================================================= */
+
+static void flashWriteByte20(
+    uint32_t address,
+    uint8_t value)
+{
+    __data20_write_char(
+        address,
+        value);
+}
+
+
+static uint8_t flashReadByte20(
+    uint32_t address)
+{
+    return
+        (uint8_t)__data20_read_char(
+            address);
+}
+
+
+/* =========================================================
+ * Flash segment silme
+ * ========================================================= */
+
+static uint8_t flashEraseSegment(
+    uint32_t segmentAddress)
+{
+    if ((segmentAddress &
+         (FLASH_SEGMENT_SIZE - 1UL)) != 0UL)
+    {
+        return 0;
+    }
+
+    if (segmentAddress != APP_VECTOR_SEGMENT &&
+        segmentAddress < APP_START)
+    {
+        return 0;
+    }
+
+    if (segmentAddress >= FLASH_END_EXCLUSIVE)
+    {
+        return 0;
+    }
+
+    if (rangesOverlap(
+            segmentAddress,
+            segmentAddress + FLASH_SEGMENT_SIZE,
+            PROTECTED_START,
+            PROTECTED_END))
+    {
+        return 0;
+    }
+
+    while (FCTL3 & BUSY)
+    {
+    }
+
+    FCTL3 = FWKEY;
+    FCTL1 = FWKEY | ERASE;
+
+    flashWriteByte20(
+        segmentAddress,
+        0xFF);
+
+    while (FCTL3 & BUSY)
+    {
+    }
+
+    FCTL1 = FWKEY;
+    FCTL3 = FWKEY | LOCK;
+
+    return 1;
+}
+
+
+/* =========================================================
+ * Flash yazma ve doğrulama
+ * ========================================================= */
+
+static uint8_t flashWriteBytes(
+    uint32_t address,
+    const uint8_t *data,
+    uint8_t length)
+{
+    uint8_t i;
+
+    if (!addressAllowed(
+            address,
+            length))
+    {
+        return 0;
+    }
+
+    while (FCTL3 & BUSY)
+    {
+    }
+
+    FCTL3 = FWKEY;
+    FCTL1 = FWKEY | WRT;
+
+    for (i = 0; i < length; i++)
+    {
+        flashWriteByte20(
+            address + (uint32_t)i,
+            data[i]);
+
+        while (FCTL3 & BUSY)
+        {
+        }
+    }
+
+    FCTL1 = FWKEY;
+    FCTL3 = FWKEY | LOCK;
+
+    /*
+     * Verify.
+     */
+    for (i = 0; i < length; i++)
+    {
+        uint8_t flashValue;
+
+        flashValue =
+            flashReadByte20(
+                address +
+                (uint32_t)i);
+
+        if (flashValue != data[i])
+        {
+            return 0;
+        }
+    }
+
+    return 1;
+}
+
+
+/* =========================================================
+ * Uygulamaya geçiş
+ * ========================================================= */
+
+typedef void (*ApplicationEntryFunction)(void);
+
+
+static uint16_t readVirtualVectorWord(uint32_t address)
+{
+    uint16_t lowByte;
+    uint16_t highByte;
+
+    lowByte =
+        (uint16_t)flashReadByte20(address);
+
+    highByte =
+        (uint16_t)flashReadByte20(address + 1UL);
+
+    return (uint16_t)(lowByte | (highByte << 8));
+}
+
+
+static uint8_t applicationIsValid(void)
+{
+    uint16_t entryAddress;
+
+    entryAddress =
+        readVirtualVectorWord(APP_VECTOR_RESET);
+
+    if (entryAddress == 0xFFFFU ||
+        entryAddress < (uint16_t)APP_START)
+    {
+        return 0;
+    }
+
+    return 1;
+}
+
+
+static void copyApplicationVectorsToRam(void)
+{
+    uint16_t i;
+
+    for (i = 0; i < VECTOR_TABLE_SIZE; i++)
+    {
+        volatile uint8_t *destination;
+
+        destination =
+            (volatile uint8_t *)
+            (RAM_VECTOR_START + (uint32_t)i);
+
+        *destination =
+            flashReadByte20(
+                APP_VECTOR_START + (uint32_t)i);
+    }
+}
+
+
+static void jumpToApplication(void)
+{
+    ApplicationEntryFunction applicationEntry;
+    uint16_t entryAddress;
+
+    __disable_interrupt();
+
+    while (FCTL3 & BUSY)
+    {
+    }
+
+    FCTL1 = FWKEY;
+    FCTL3 = FWKEY | LOCK;
+
+    UCA0IE = 0;
+    UCA0IFG = 0;
+
+    WDTCTL = WDTPW | WDTHOLD;
+
+    if (!applicationIsValid())
+    {
+        while (1)
+        {
+        }
+    }
+
+    copyApplicationVectorsToRam();
+
+    SYSCTL |= SYSRIVECT;
+
+    __set_SP_register(0x5C00);
+
+    entryAddress =
+        readVirtualVectorWord(APP_VECTOR_RESET);
+
+    applicationEntry =
+        (ApplicationEntryFunction)entryAddress;
+
+    applicationEntry();
+
+    while (1)
+    {
+    }
+}
+
+
+/* =========================================================
+ * ERASE komutu
+ * ========================================================= */
+
+static void handleEraseCommand(void)
+{
+    lastErasedSegment =
+        0xFFFFFFFFUL;
+
+    sendAck(
+        CMD_ERASE,
+        0xEE,
+        0x00);
+}
+
+
+/* =========================================================
+ * WRITE komutu
+ * ========================================================= */
+
+static void handleWriteCommand(void)
+{
+    uint8_t length;
+    uint16_t receivedCrc;
+    uint16_t calculatedCrc;
+    uint32_t address;
+    uint32_t segmentAddress;
+
+    length = packet[7];
+
+    if (length != WRITE_LEN)
+    {
+        sendNack(0x10);
+        return;
+    }
+
+    receivedCrc =
+        ((uint16_t)packet[24] << 8) |
+        ((uint16_t)packet[25]);
+
+    calculatedCrc =
+        crc16_calculate(
+            packet,
+            24);
+
+    if (receivedCrc != calculatedCrc)
+    {
+        sendNack(0x11);
+        return;
+    }
+
+    address =
+        readPacketAddress();
+
+    if (!addressAllowed(
+            address,
+            length))
+    {
+        sendNack(0x12);
+        return;
+    }
+
+    segmentAddress =
+        address &
+        ~(FLASH_SEGMENT_SIZE - 1UL);
+
+    if (segmentAddress !=
+        lastErasedSegment)
+    {
+        if (!flashEraseSegment(
+                segmentAddress))
+        {
+            sendNack(0x14);
+            return;
+        }
+
+        lastErasedSegment =
+            segmentAddress;
+    }
+
+    if (!flashWriteBytes(
+            address,
+            &packet[8],
+            length))
+    {
+        sendNack(0x13);
+        return;
+    }
+
+    sendAck(
+        CMD_WRITE,
+        packet[8],
+        packet[23]);
+}
+
+
+/* =========================================================
+ * DONE komutu
+ * ========================================================= */
+
+static void handleDoneCommand(void)
+{
+    /*
+     * Önce ESP'ye başarı ACK'i gönder.
+     */
+    sendAck(
+        CMD_DONE,
+        0xD0,
+        0x0E);
+
+    /*
+     * 9600 baud'da 8 byte ACK yaklaşık 8-10 ms sürer.
+     * Yeterli güvenlik payı bırak.
+     */
+    __delay_cycles(500000UL);
+
+    /*
+     * Uygulamaya geç.
+     */
+    jumpToApplication();
+}
+
+
+/* =========================================================
+ * Paket dağıtıcı
+ * ========================================================= */
+
+static void processPacket(void)
+{
+    uint8_t command;
+
+    command = packet[2];
+
+    switch (command)
+    {
+        case CMD_ERASE:
+        {
+            handleEraseCommand();
+            break;
+        }
+
+        case CMD_WRITE:
+        {
+            handleWriteCommand();
+            break;
+        }
+
+        case CMD_DONE:
+        {
+            handleDoneCommand();
+            break;
+        }
+
+        default:
+        {
+            sendNack(0x20);
+            break;
+        }
+    }
+}
+
+
+/* =========================================================
+ * Parser
+ * ========================================================= */
+
+static void resetParser(void)
+{
+    parserState = 0;
+    packetIndex = 0;
+}
+
+
+static void handleReceivedByte(
+    uint8_t value)
+{
+    switch (parserState)
+    {
+        case 0:
+        {
+            if (value == H1)
+            {
+                packet[0] = value;
+                parserState = 1;
+            }
+
+            break;
+        }
+
+        case 1:
+        {
+            if (value == H2)
+            {
+                packet[1] = value;
+                packetIndex = 2;
+                parserState = 2;
+            }
+            else if (value == H1)
+            {
+                packet[0] = value;
+                parserState = 1;
+            }
+            else
+            {
+                resetParser();
+            }
+
+            break;
+        }
+
+        case 2:
+        {
+            if (packetIndex >=
+                sizeof(packet))
+            {
+                resetParser();
+                sendNack(0x21);
+                break;
+            }
+
+            packet[packetIndex++] =
+                value;
+
+            if (packetIndex == 26U)
+            {
+                resetParser();
+                processPacket();
+            }
+
+            break;
+        }
+
+        default:
+        {
+            resetParser();
+            break;
+        }
+    }
+}
+
+
+/* =========================================================
+ * Main
+ * ========================================================= */
+
+int main(void)
+{
+    HAL_BOOT_INIT();
+
+    resetParser();
+
+    while (1)
+    {
+        uint8_t receivedByte;
+
+        if (softuart_getc(
+                &receivedByte))
+        {
+            handleReceivedByte(
+                receivedByte);
+        }
+    }
+}
+
+
+/* =========================================================
+ * USCI A0 RX ISR
+ * ========================================================= */
+
+#pragma vector=USCI_A0_VECTOR
+__interrupt void USCI_A0_ISR(void)
+{
+    switch (__even_in_range(
+        UCA0IV,
+        4))
+    {
+        case 2:
+        {
+            RXRegister =
+                UCA0RXBUF;
+
+            hasReceived =
+                true;
+
+            break;
+        }
+
+        default:
+        {
+            break;
+        }
+    }
+}

@@ -1,0 +1,32 @@
+[
+   {
+      "directory" : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/Debug",
+      "command"   : "clang++ -I\"C:/ti/ccs2100/ccs/ccs_base/msp430/include\" -I\"C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test\" -I\"C:/ti/ccs2100/ccs/tools/compiler/ti-cgt-msp430_21.6.2.LTS/include\" -D__MSP430F67751__ -xc",
+      "file"      : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/app_jump.c"
+   },
+   {
+      "directory" : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/Debug",
+      "command"   : "clang++ -I\"C:/ti/ccs2100/ccs/ccs_base/msp430/include\" -I\"C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test\" -I\"C:/ti/ccs2100/ccs/tools/compiler/ti-cgt-msp430_21.6.2.LTS/include\" -D__MSP430F67751__ -xc",
+      "file"      : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/boot_protocol.c"
+   },
+   {
+      "directory" : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/Debug",
+      "command"   : "clang++ -I\"C:/ti/ccs2100/ccs/ccs_base/msp430/include\" -I\"C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test\" -I\"C:/ti/ccs2100/ccs/tools/compiler/ti-cgt-msp430_21.6.2.LTS/include\" -D__MSP430F67751__ -xc",
+      "file"      : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/boot_uart.c"
+   },
+   {
+      "directory" : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/Debug",
+      "command"   : "clang++ -I\"C:/ti/ccs2100/ccs/ccs_base/msp430/include\" -I\"C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test\" -I\"C:/ti/ccs2100/ccs/tools/compiler/ti-cgt-msp430_21.6.2.LTS/include\" -D__MSP430F67751__ -xc",
+      "file"      : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/crc16.c"
+   },
+   {
+      "directory" : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/Debug",
+      "command"   : "clang++ -I\"C:/ti/ccs2100/ccs/ccs_base/msp430/include\" -I\"C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test\" -I\"C:/ti/ccs2100/ccs/tools/compiler/ti-cgt-msp430_21.6.2.LTS/include\" -D__MSP430F67751__ -xc",
+      "file"      : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/flash_driver.c"
+   },
+   {
+      "directory" : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/Debug",
+      "command"   : "clang++ -I\"C:/ti/ccs2100/ccs/ccs_base/msp430/include\" -I\"C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test\" -I\"C:/ti/ccs2100/ccs/tools/compiler/ti-cgt-msp430_21.6.2.LTS/include\" -D__MSP430F67751__ -xc",
+      "file"      : "C:/Users/abdulhamit/Desktop/bootloader deneme/MSP430_Bootloader_acCharger_ready/MSP430_Boot_Test/main.c"
+   }
+]

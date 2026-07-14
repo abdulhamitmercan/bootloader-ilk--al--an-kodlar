@@ -1,0 +1,9 @@
+"./app_jump.obj"
+"./boot_protocol.obj"
+"./boot_uart.obj"
+"./crc16.obj"
+"./flash_driver.obj"
+"./main.obj"
+"../lnk_msp430f67751.cmd"
+-llibmath.a
+-llibc.a
