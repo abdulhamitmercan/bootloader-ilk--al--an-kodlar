@@ -4,7 +4,7 @@
 
 
 #define SW_VERSION  11
-#define HW_VERSION  31
+#define HW_VERSION  21
 
 
 
