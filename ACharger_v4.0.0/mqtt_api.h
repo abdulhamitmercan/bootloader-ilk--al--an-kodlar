@@ -4,6 +4,11 @@
 
 uint16_t isOcppActive =1;  // kW varsayılan
 uint16_t maxPower = 22;
+static uint32_t versionTimer = 0;
+static bool versionTimerStarted = false;
+static bool hwVersionWritten = false;
+static bool swVersionWritten = false;
+static bool swZeroWritten = false;
 
 inline void assignUint16(const char* s, uint16_t& dst) {
   if (!s) return;
@@ -36,32 +41,35 @@ static String mspStateToString(uint16_t state) {
 static void updateMqttMspValues(const ChargerData *charger) {
   if (!charger) return;
 
+  static uint32_t versionTimer = 0;
+  static bool versionTimerStarted = false;
+  static bool versionWritten = false;
+
+  if (!versionTimerStarted) {
+    versionTimer = millis();
+    versionTimerStarted = true;
+  }
+
   String sActuator = String(charger->st1.actuator);
   String sTemp     = String(charger->st1.temp) + "°C";
-  String sLeak     = String(charger->st1.leakage);
   String sState    = mspStateToString(charger->st1.mspState);
   String sRgb      = String(charger->st1.rgb);
 
   float cpVolt = charger->st2.controlPilot / 10.0f;
   String sCpVolt = String(cpVolt, 1) + "V";
-  String sRlyOut   = String(charger->st2.relayStatus);
-  String sPwmEn    = String(charger->st2.pwmStatus);
+  String sRlyOut = String(charger->st2.relayStatus);
+  String sPwmEn  = String(charger->st2.pwmStatus);
 
-  String sL1Volt   = String(charger->l1.voltage) + "V";
-  String sL1Cur    = String(charger->l1.current) + "A";
-
-  String sL2Volt   = String(charger->l2.voltage) + "V";
-  String sL2Cur    = String(charger->l2.current) + "A";
-
-  String sL3Volt   = String(charger->l3.voltage) + "V";
-  String sL3Cur    = String(charger->l3.current) + "A";
-
-  int hw = charger->version.hw; String sHWVer = "HW v" + String(hw / 10) + "." + String(hw % 10);
-  int sw = charger->version.sw; String sSWVer = "SW v" + String(sw / 10) + "." + String(sw % 10);
+  String sL1Volt = String(charger->l1.voltage) + "V";
+  String sL1Cur  = String(charger->l1.current) + "A";
+  String sL2Volt = String(charger->l2.voltage) + "V";
+  String sL2Cur  = String(charger->l2.current) + "A";
+  String sL3Volt = String(charger->l3.voltage) + "V";
+  String sL3Cur  = String(charger->l3.current) + "A";
 
   mqttDataValue.setMSP_ACTUATR(sActuator.c_str());
   mqttDataValue.setMSP_TEMP(sTemp.c_str());
-  if(charger->st1.leakage) mqttDataValue.setMSP_LEAK("1");
+  if (charger->st1.leakage) mqttDataValue.setMSP_LEAK("1");
   mqttDataValue.setMSP_STATE(sState.c_str());
   mqttDataValue.setMSP_RGB_OUT(sRgb.c_str());
 
@@ -71,18 +79,41 @@ static void updateMqttMspValues(const ChargerData *charger) {
 
   mqttDataValue.setMSP_L1_VOLT(sL1Volt.c_str());
   mqttDataValue.setMSP_L1_CUR(sL1Cur.c_str());
-
   mqttDataValue.setMSP_L2_VOLT(sL2Volt.c_str());
   mqttDataValue.setMSP_L2_CUR(sL2Cur.c_str());
-
   mqttDataValue.setMSP_L3_VOLT(sL3Volt.c_str());
   mqttDataValue.setMSP_L3_CUR(sL3Cur.c_str());
 
-  mqttDataValue.setMSP_HW_VER(sHWVer.c_str());
-  mqttDataValue.setMSP_SW_VER(sSWVer.c_str());  
+  if (millis() - versionTimer >= 25000UL) {
+    int hw = charger->version.hw;
+    int sw = charger->version.sw;
 
+    // HW, geçerli değer geldiğinde yalnızca bir kere yazılır.
+    if (!hwVersionWritten && hw > 0) {
+      String sHWVer = "HW v" + String(hw / 10) + "." + String(hw % 10);
+      mqttDataValue.setMSP_HW_VER(sHWVer.c_str());
+      hwVersionWritten = true;
 
-   // case mqttSCAN_LIST:           return abdl.getSCAN_LIST();
+      Serial.printf("[MSP HW] %s\n", sHWVer.c_str());
+    }
+
+    // SW sıfırsa uzaktan güncelleme gerektiğinin görülmesi için bir kere 0 yazılır.
+    if (!swVersionWritten && sw == 0 && !swZeroWritten && (strcmp(mqttDataValue.getOTA_UPDATE_ACTIVE(), "61") != 0 && strcmp(mqttDataValue.getOTA_UPDATE_ACTIVE(), "62") != 0)) {
+      mqttDataValue.setMSP_SW_VER("SW v0.0");
+      swZeroWritten = true;
+      addErrorIfNotExists("E2");
+      Serial.println("[MSP SW] SW v0.0 - MSP update gerekli");
+    }
+
+    //  SW geçerli olduğunda tekrar yazılır.
+    if (!swVersionWritten && sw > 0) {
+      String sSWVer = "SW v" + String(sw / 10) + "." + String(sw % 10);
+      mqttDataValue.setMSP_SW_VER(sSWVer.c_str());
+      swVersionWritten = true;
+
+      Serial.printf("[MSP SW] %s\n", sSWVer.c_str());
+    }
+  }
 }
 
 static void printUartDebugValues(const ChargerData *charger) {

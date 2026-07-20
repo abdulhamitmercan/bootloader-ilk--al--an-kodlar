@@ -911,10 +911,10 @@ void write_Screen_DownloadStatus(size_t downloaded, size_t total, int percent)
 
     lv_arc_set_value(ui_Arc31, percent);
 
-    if (percent >= 99) {
+    if (percent >= 100) {
         lv_label_set_text(ui_Label68, "Software Writing...");
         lv_slider_set_value(ui_Slider31, 100, LV_ANIM_OFF);
-    } else if (percent >= 98) {
+    } else if (percent >= 99) {
         lv_label_set_text(ui_Label68, "Software Writing...");
         lv_slider_set_value(ui_Slider31, 50, LV_ANIM_OFF);
     } else {

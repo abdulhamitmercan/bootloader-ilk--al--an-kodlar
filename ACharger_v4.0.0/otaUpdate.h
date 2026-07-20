@@ -7,10 +7,31 @@
 #include "mqttProtocol.h"
 #include "AbdOta.h"
 #include "board_network.h"
-//#include "mspBootloader.h"
+
 #if (RUN_MODE == 2)
 
 static AbdOta abdOta;
+
+static String getSafeEspHardwareVersion() {
+  String hw = mqttDataValue.getESP_HW_VER();
+  hw.trim();
+  hw.toLowerCase();
+
+  int vPos = hw.indexOf('v');
+  if (vPos >= 0)
+    hw = hw.substring(vPos + 1);
+
+  String result;
+
+  for (size_t i = 0; i < hw.length(); i++) {
+    char c = hw[i];
+
+    if (c >= '0' && c <= '9')
+      result += c;
+  }
+
+  return result.isEmpty() ? "0" : result;
+}
 
 static inline Client& otaSelectClient() {
   switch (netType) {
@@ -22,6 +43,7 @@ static inline Client& otaSelectClient() {
         default: break;
       }
     }
+
     case NET_TYPE_GSM:  { static TinyGsmClient client(modem, 2); return client; }
     case NET_TYPE_WIFI: { static WiFiClient client; return client; }
     case NET_TYPE_ETH:  { static EthernetClient client; return client; }
@@ -33,16 +55,15 @@ static inline Client& otaSelectClient() {
 }
 
 void update_prgs(size_t downloaded, size_t total) {
-  static int last_percent = -1;
-  int percent = (total > 0) ? (int)((100ULL * downloaded) / total) : 0;
+  static int lastPercent = -1;
+  int percent = total > 0 ? (int)((100ULL * downloaded) / total) : 0;
 
-  if (last_percent == percent)
+  if (lastPercent == percent)
     return;
-   Serial.printf("[OTA] progress %d%% %u/%u\n",
-              percent,
-              (unsigned int)downloaded,
-              (unsigned int)total);
-  last_percent = percent;
+
+  lastPercent = percent;
+
+  Serial.printf("[OTA] progress %d%% %u/%u\n", percent, (unsigned int)downloaded, (unsigned int)total);
   write_Screen_DownloadStatus(downloaded, total, percent);
 }
 
@@ -59,11 +80,13 @@ static bool testTcpConnectionOnce(Client& client, const char* host, uint16_t por
     client.stop();
 
   uint32_t startMs = millis();
+
   while (!client.connect(host, port)) {
     if (millis() - startMs > connectTimeoutMs) {
       Serial.println("[TCP TEST] connect timeout");
       return false;
     }
+
     delay(250);
   }
 
@@ -72,6 +95,7 @@ static bool testTcpConnectionOnce(Client& client, const char* host, uint16_t por
                "Connection: close\r\n\r\n");
 
   startMs = millis();
+
   while (!client.available()) {
     if (!client.connected()) {
       client.stop();
@@ -79,11 +103,12 @@ static bool testTcpConnectionOnce(Client& client, const char* host, uint16_t por
       return false;
     }
 
-    if (millis() - startMs > 5000) {
+    if (millis() - startMs > 5000UL) {
       client.stop();
       Serial.println("[TCP TEST] response timeout");
       return false;
     }
+
     delay(10);
   }
 
@@ -92,7 +117,8 @@ static bool testTcpConnectionOnce(Client& client, const char* host, uint16_t por
 
   if (!(statusLine.startsWith("HTTP/1.1 200") || statusLine.startsWith("HTTP/1.0 200"))) {
     client.stop();
-    Serial.println("[TCP TEST] bad http status");
+    Serial.print("[TCP TEST] bad HTTP status: ");
+    Serial.println(statusLine);
     return false;
   }
 
@@ -123,6 +149,18 @@ static bool testTcpConnectionOnce(Client& client, const char* host, uint16_t por
   return true;
 }
 
+static String createEspManifestPath() {
+  String path = "/firmware.json?id=";
+  path += mqttDataValue.getESP_ID();
+  path += "&ver=";
+  path += mqttDataValue.getOTA_VER();
+  path += "&hw=";
+  path += getSafeEspHardwareVersion();
+  path += "&key=";
+  path += mqttDataValue.getOTA_KEY();
+  return path;
+}
+
 static bool preOtaTcpHealthCheck() {
   if (!recoverNetwork()) {
     Serial.println("[TCP TEST] network recover fail");
@@ -130,22 +168,9 @@ static bool preOtaTcpHealthCheck() {
   }
 
   Client& testClient = otaSelectClient();
+  String path = createEspManifestPath();
 
-  String path = "/firmware.json?id=";
-  path += mqttDataValue.getESP_ID();
-  path += "&ver=";
-  path += mqttDataValue.getOTA_VER();
-  path += "&key=";
-  path += mqttDataValue.getOTA_KEY();
-
-  bool ok1 = testTcpConnectionOnce(
-      testClient,
-      "85.105.100.7",
-      5050,
-      path,
-      15000,
-      10000
-  );
+  bool ok1 = testTcpConnectionOnce(testClient, "85.105.100.7", 5050, path, 15000, 10000);
 
   if (!ok1) {
     Serial.println("[TCP TEST] first test fail");
@@ -154,14 +179,7 @@ static bool preOtaTcpHealthCheck() {
 
   delay(2000);
 
-  bool ok2 = testTcpConnectionOnce(
-      testClient,
-      "85.105.100.7",
-      5050,
-      path,
-      15000,
-      10000
-  );
+  bool ok2 = testTcpConnectionOnce(testClient, "85.105.100.7", 5050, path, 15000, 10000);
 
   if (!ok2) {
     Serial.println("[TCP TEST] second test fail");
@@ -171,10 +189,115 @@ static bool preOtaTcpHealthCheck() {
   return true;
 }
 
+static String extractEspJsonString(const String& json, const String& key) {
+  String pattern = "\"" + key + "\"";
+
+  int keyPos = json.indexOf(pattern);
+  if (keyPos < 0)
+    return "";
+
+  int colonPos = json.indexOf(':', keyPos + pattern.length());
+  if (colonPos < 0)
+    return "";
+
+  int firstQuote = json.indexOf('"', colonPos + 1);
+  if (firstQuote < 0)
+    return "";
+
+  int secondQuote = json.indexOf('"', firstQuote + 1);
+  if (secondQuote < 0)
+    return "";
+
+  return json.substring(firstQuote + 1, secondQuote);
+}
+
+static AbdOtaInfo checkEspUpdateWithHardware(Client& client) {
+  AbdOtaInfo info;
+
+  info.currentVersion = mqttDataValue.getOTA_VER();
+
+  String path = createEspManifestPath();
+
+  Serial.print("[OTA] manifestPath = ");
+  Serial.println(path);
+
+  if (client.connected())
+    client.stop();
+
+  if (!client.connect("85.105.100.7", 5050)) {
+    Serial.println("[OTA] manifest connect failed");
+    return info;
+  }
+
+  client.print(String("GET ") + path + " HTTP/1.1\r\n" +
+               "Host: 85.105.100.7\r\n" +
+               "Connection: close\r\n\r\n");
+
+  uint32_t startedAt = millis();
+
+  while (!client.available()) {
+    if (!client.connected() || millis() - startedAt > 10000UL) {
+      client.stop();
+      Serial.println("[OTA] manifest timeout");
+      return info;
+    }
+
+    delay(5);
+  }
+
+  String statusLine = client.readStringUntil('\n');
+  statusLine.trim();
+
+  bool httpOk = statusLine.startsWith("HTTP/1.1 200") || statusLine.startsWith("HTTP/1.0 200");
+
+  if (!httpOk) {
+    Serial.print("[OTA] manifest HTTP error: ");
+    Serial.println(statusLine);
+    client.stop();
+    return info;
+  }
+
+  while (client.connected() || client.available()) {
+    String line = client.readStringUntil('\n');
+
+    if (line == "\r" || line.length() == 0)
+      break;
+  }
+
+  String body;
+  uint32_t lastDataMs = millis();
+
+  while (client.connected() || client.available()) {
+    while (client.available()) {
+      body += (char)client.read();
+      lastDataMs = millis();
+    }
+
+    if (millis() - lastDataMs > 3000UL)
+      break;
+
+    delay(1);
+  }
+
+  client.stop();
+
+  info.rawJson = body;
+
+  String availableText = extractEspJsonString(body, "available");
+
+  info.serverVersion = extractEspJsonString(body, "version");
+  info.firmwareUrl = extractEspJsonString(body, "url");
+  info.reportUrl = extractEspJsonString(body, "report_url");
+  info.available = availableText == "true" || availableText == "1";
+
+  return info;
+}
+
 void startOtaUpdate() {
   mqttDataValue.setOTA_UPDATE_ACTIVE("61");
 
   bool fsOk = LittleFS.begin(true);
+
   Serial.print("LittleFS.begin = ");
   Serial.println(fsOk ? "OK" : "FAIL");
 
@@ -187,6 +310,12 @@ void startOtaUpdate() {
   Serial.print("mqttDataValue.getOTA_KEY() = ");
   Serial.println(mqttDataValue.getOTA_KEY());
 
+  Serial.print("mqttDataValue.getESP_HW_VER() = ");
+  Serial.println(mqttDataValue.getESP_HW_VER());
+
+  Serial.print("Safe ESP HW = ");
+  Serial.println(getSafeEspHardwareVersion());
+
   otaSetupCommon();
 
   if (!preOtaTcpHealthCheck()) {
@@ -195,19 +324,28 @@ void startOtaUpdate() {
   }
 
   Client& otaClient = otaSelectClient();
-  AbdOtaInfo info = abdOta.checkUpdate(otaClient);
+
+  // abdOta.checkUpdate() yerine donanim surumunu da
+  // sunucuya gonderen kontrol fonksiyonu kullaniliyor.
+  AbdOtaInfo info = checkEspUpdateWithHardware(otaClient);
 
   Serial.println("----- OTA INFO -----");
+
   Serial.print("available = ");
   Serial.println(info.available ? "true" : "false");
+
   Serial.print("currentVersion = ");
   Serial.println(info.currentVersion);
+
   Serial.print("serverVersion = ");
   Serial.println(info.serverVersion);
+
   Serial.print("firmwareUrl = ");
   Serial.println(info.firmwareUrl);
+
   Serial.print("reportUrl = ");
   Serial.println(info.reportUrl);
+
   Serial.println("--------------------");
 
   if (info.available) {
@@ -219,182 +357,21 @@ void startOtaUpdate() {
       return;
     }
 
-    bool ok = abdOta.doUpdateResume(
-        otaClient,
-        info,
-        []() -> bool {
-          return recoverNetwork();
-        }
-    );
+    bool ok = abdOta.doUpdateResume(otaClient, info, []() -> bool {
+      return recoverNetwork();
+    });
 
-    if (!ok) {
+    if (!ok)
       Serial.println("OTA FAIL");
-    }
 
   } else {
     Serial.println("No new firmware");
-    abdOta.reportNoNewFirmware(otaClient, info.reportUrl);
+
+    if (!info.reportUrl.isEmpty())
+      abdOta.reportNoNewFirmware(otaClient, info.reportUrl);
   }
 }
-bool downloadMspBinToLittleFS() {
-  const char* host = "85.105.100.7";
-  const uint16_t port = 5050;
-  const char* path = "/msp.bin";
 
-  if (!recoverNetwork()) {
-    Serial.println("[MSP OTA] Network recover FAIL");
-    return false;
-  }
-
-  if (!LittleFS.begin(true)) {
-    Serial.println("[MSP OTA] LittleFS FAIL");
-    return false;
-  }
-
-  if (LittleFS.exists("/msp.bin")) {
-    Serial.println("[MSP OTA] Eski msp.bin siliniyor...");
-    LittleFS.remove("/msp.bin");
-  }
-
-  Client& client = otaSelectClient();
-
-  if (client.connected())
-    client.stop();
-
-  Serial.println("[MSP OTA] TCP baglaniyor...");
-
-  uint32_t t0 = millis();
-  while (!client.connect(host, port)) {
-    if (millis() - t0 > 15000) {
-      Serial.println("[MSP OTA] TCP connect timeout");
-      return false;
-    }
-    delay(250);
-  }
-
-  client.print(String("GET ") + path + " HTTP/1.1\r\n" +
-               "Host: " + host + "\r\n" +
-               "Connection: close\r\n\r\n");
-
-  t0 = millis();
-  while (!client.available()) {
-    if (!client.connected()) {
-      client.stop();
-      Serial.println("[MSP OTA] server response yok kapandi");
-      return false;
-    }
-
-    if (millis() - t0 > 10000) {
-      client.stop();
-      Serial.println("[MSP OTA] response timeout");
-      return false;
-    }
-    delay(10);
-  }
-
-  String statusLine = client.readStringUntil('\n');
-  statusLine.trim();
-
-  Serial.print("[MSP OTA] HTTP status: ");
-  Serial.println(statusLine);
-
-  if (!(statusLine.startsWith("HTTP/1.1 200") ||
-        statusLine.startsWith("HTTP/1.0 200"))) {
-    client.stop();
-    Serial.println("[MSP OTA] bad HTTP status");
-    return false;
-  }
-
-  int total = -1;
-
-  while (client.connected()) {
-    String line = client.readStringUntil('\n');
-    line.trim();
-
-    if (line.length() == 0)
-      break;
-
-    String lower = line;
-    lower.toLowerCase();
-
-    if (lower.startsWith("content-length:")) {
-      String lenStr = line.substring(line.indexOf(':') + 1);
-      lenStr.trim();
-      total = lenStr.toInt();
-    }
-  }
-
-  Serial.print("[MSP OTA] Content-Length: ");
-  Serial.println(total);
-
-  File file = LittleFS.open("/msp.bin", "w");
-  if (!file) {
-    client.stop();
-    Serial.println("[MSP OTA] /msp.bin acilamadi");
-    return false;
-  }
-
-  uint8_t buffer[512];
-  int downloaded = 0;
-  int lastPercent = -1;
-  uint32_t lastDataMs = millis();
-
-  while (client.connected() || client.available()) {
-    while (client.available()) {
-      int n = client.read(buffer, sizeof(buffer));
-
-      if (n > 0) {
-        file.write(buffer, n);
-        downloaded += n;
-        lastDataMs = millis();
-
-        if (total > 0) {
-          int percent = (downloaded * 100) / total;
-
-          if (percent != lastPercent) {
-            Serial.printf("[MSP OTA] %d%% (%d/%d)\n",
-                          percent,
-                          downloaded,
-                          total);
-            lastPercent = percent;
-          }
-        } else {
-          Serial.printf("[MSP OTA] downloaded=%d\n", downloaded);
-        }
-      }
-    }
-
-    if (millis() - lastDataMs > 15000) {
-      Serial.println("[MSP OTA] data timeout");
-      break;
-    }
-
-    delay(2);
-  }
-
-  file.close();
-  client.stop();
-
-  File verify = LittleFS.open("/msp.bin", "r");
-  if (!verify) {
-    Serial.println("[MSP OTA] Verify FAIL");
-    return false;
-  }
-
-  size_t finalSize = verify.size();
-  verify.close();
-
-  Serial.print("[MSP OTA] Final size: ");
-  Serial.println(finalSize);
-
-  if (total > 0 && finalSize != (size_t)total) {
-    Serial.println("[MSP OTA] Size mismatch");
-    return false;
-  }
-
-  Serial.println("[MSP OTA] Download TAMAMLANDI");
-  return true;
-}
 #endif
 
 /*

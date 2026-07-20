@@ -103,8 +103,9 @@ enum MessageTypeData : uint8_t {
   mqttACTIVE_LOGO = 65,
 
   mqttRFID_UPDATE = 66,
-  mqttACTIVE_RFID = 67
-    //sonuncu 67,  67 dahil dolu sonraki sayıdan devam et
+  mqttACTIVE_RFID = 67,
+  mqttESP_HW_VER = 68
+    //sonuncu 68,  68 dahil dolu sonraki sayıdan devam et
 };
 
 // ---------------- DataValue ----------------
@@ -184,11 +185,13 @@ private:
   mutable String mqttLOGO_UPDATE = "0"; // ui logo download 1 no download 0
   mutable String mqttLOGO_NAME = "bluetech_logo"; // which logo download  acrapol_logo,celikler_logo,ctg_logo,sepas_logo
   mutable String mqttACTIVE_LOGO = "bluetech_logo"; // current logo 
-   
+  mutable String mqttESP_HW_VER  = "V1.3"; // ESP Hardware Version
+
   char mqttSCAN_LIST[2048]  = ""; //Read Scanning Wifi ssid list on esp evroment 
 
   mutable String mqttRFID_UPDATE = "0";
   mutable String mqttACTIVE_RFID = "24D7B502";
+
 public:
 
     const char* getESP_ID() const { mqttESP_ID = Nvsmem::getOrInit("mqttESP_ID", mqttESP_ID); return mqttESP_ID.c_str(); }
@@ -387,6 +390,10 @@ public:
 
     const char* getACTIVE_RFID() const { mqttACTIVE_RFID = Nvsmem::getOrInit("mqttACTIVE_RFID", mqttACTIVE_RFID); return mqttACTIVE_RFID.c_str(); }
     void setACTIVE_RFID(const char* d) { mqttACTIVE_RFID = d ? d : ""; Nvsmem::loadString("mqttACTIVE_RFID", mqttACTIVE_RFID); }
+
+    const char* getESP_HW_VER() const  { mqttESP_HW_VER = Nvsmem::getOrInit("mqttESP_HW_VER", mqttESP_HW_VER); return mqttESP_HW_VER.c_str(); }
+    void setESP_HW_VER  (const char* d)  { mqttESP_HW_VER = d ? d : ""; Nvsmem::loadString("mqttESP_HW_VER", mqttESP_HW_VER); }
+
 };
 
 
@@ -475,13 +482,15 @@ inline bool protoSet(DataValue& abdl, uint8_t msg, const char* val) {
     case mqttMSP_L2_CUR:        abdl.setMSP_L2_CUR(val);return true;
     case mqttMSP_L3_VOLT:       abdl.setMSP_L3_VOLT(val);return true;
     case mqttMSP_L3_CUR:        abdl.setMSP_L3_CUR(val);return true;*/
-
+    case mqttMSP_HW_VER:        abdl.setMSP_HW_VER(val);  return true;
+    case mqttMSP_SW_VER:        abdl.setMSP_SW_VER(val);  return true;
+    
     case mqttLOGO_UPDATE:       abdl.setLOGO_UPDATE(val); return true;
     case mqttLOGO_NAME:         abdl.setLOGO_NAME(val);   return true;
     case mqttACTIVE_LOGO:       abdl.setACTIVE_LOGO(val); return true;
     case mqttRFID_UPDATE:       abdl.setRFID_UPDATE(val); return true;
     case mqttACTIVE_RFID:       abdl.setACTIVE_RFID(val); return true;
-
+    case mqttESP_HW_VER:        abdl.setESP_HW_VER(val);  return true;
       return false;
 
     default:
@@ -570,7 +579,7 @@ inline const char* protoRead(const DataValue& abdl, uint8_t msg) {
 
     case mqttRFID_UPDATE:          return abdl.getRFID_UPDATE();
     case mqttACTIVE_RFID:          return abdl.getACTIVE_RFID();
-    
+    case mqttESP_HW_VER:           return abdl.getESP_HW_VER();    
       return nullptr;
 
     default:

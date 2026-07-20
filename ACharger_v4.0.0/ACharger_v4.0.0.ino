@@ -72,6 +72,8 @@ esp_timer_handle_t recoveryTimer;
 static bool recoveryLock = false;
 static bool resetLock = false;
 static bool readState = true; 
+
+uint16_t ota_rescue = 0;
 void recoveryCheckTask(void* arg) {
 
     forceHitConnectorStatusOnce(200,comm.rx);
@@ -232,6 +234,7 @@ uint8_t initializeModules() {
     stopRecoveryTimer();
     write_Screen_Uploading_Start();
     startLvglTask();
+    ota_rescue = 1 ;
   }
    //readRecovery = Nvsmem::loadString("recovery");
    //if (readRecovery == "blocked")  mspHardReset1();
@@ -402,6 +405,7 @@ generateAndSetSerialFromMac();
 
   mqttDataValue.setOTA_VER(FW_VER_COMPILED);
   assignUint16(mqttDataValue.getOCPP_ACTIVE(), mqttocppActive);
+  if(ota_rescue) ESP.restart(); 
 
 }
 
@@ -783,7 +787,7 @@ void mainUpdate() {
 
 
   static unsigned long lastMspUpdate = 0;
-  if (millis() - lastMspUpdate >= 1000) {
+  if (millis() - lastMspUpdate >= 1000  ) {
       lastMspUpdate = millis();
       updateMqttMspValues(&chargerData);
   }

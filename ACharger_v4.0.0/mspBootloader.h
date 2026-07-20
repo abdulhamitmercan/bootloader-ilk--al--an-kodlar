@@ -569,7 +569,7 @@ static bool sendMspReport(Client& client, const String& reportUrl, const String&
 
 static bool prepareMspDownload(AbdOtaInfo& info)
 {
-    mqttDataValue.setOTA_UPDATE_ACTIVE("61");
+    mqttDataValue.setOTA_UPDATE_ACTIVE("69");
 
     String currentMspVersion = getSafeMspCurrentVersion();
     String currentMspHardware = getSafeMspHardwareVersion();
@@ -1048,6 +1048,7 @@ static void mspWriteProgressUpdate();
 static bool waitMspNetworkReconnect(uint32_t timeoutMs = 120000UL);
 static void processMspWriteScreenUpdate();
 static volatile bool mspWriteWaitNetwork = false;
+static volatile bool mspWriteNetworkFailed = false;
 
 /* ===================== TI-TXT -> MSP yazma ===================== */
 
@@ -1058,6 +1059,7 @@ static bool flushDataBlock(uint32_t blockAddress, uint8_t *block, uint8_t &block
 
     processMspWriteScreenUpdate();
 
+    if (mspWriteNetworkFailed) return false;
     if (!waitMspNetworkReconnect()) return false;
 
     if (!sendBootPacket(CMD_WRITE, blockAddress, block, blockLength)) {
@@ -1071,6 +1073,8 @@ static bool flushDataBlock(uint32_t blockAddress, uint8_t *block, uint8_t &block
     mspProgressInfo.phase = MspUpdatePhase::WRITING;
 
     mspWriteProgressUpdate();
+
+    if (mspWriteNetworkFailed) return false;
 
     blockLength = 0;
     return true;
@@ -1245,6 +1249,7 @@ static TaskHandle_t mspWriteReportTaskHandle = nullptr;
 static volatile bool mspWriteReportTaskRunning = false;
 static volatile bool mspWriteReportStopRequested = false;
 static int mspLastWritePercent = -1;
+static int mspLastServerReportedPercent = -1;
 
 static volatile int mspPendingScreenPercent = -1;
 static volatile bool mspPendingScreenUpdate = false;
@@ -1289,6 +1294,14 @@ static inline Client& mspWriteReportClient()
     return fallbackClient;
 }
 
+static bool mspWriteUsesGsm()
+{
+    if (netType == NET_TYPE_GSM) return true;
+
+    return netType == NET_TYPE_ALL &&
+           comsupportedNetwork == NET_TYPE_GSM;
+}
+
 static bool waitMspNetworkReconnect(uint32_t timeoutMs)
 {
     if (!mspWriteWaitNetwork) return true;
@@ -1314,6 +1327,7 @@ static bool waitMspNetworkReconnect(uint32_t timeoutMs)
 
         if (millis() - startedAt >= timeoutMs) {
             Serial.println("[MSP WRITE] network reconnect timeout");
+            mspWriteNetworkFailed = true;
             return false;
         }
 
@@ -1437,7 +1451,22 @@ static void mspWriteProgressUpdate()
 
     Serial.printf("[MSP WRITE] %u%% %lu/%lu\n", percent, (unsigned long)mspProgressInfo.writtenBytes, (unsigned long)mspProgressInfo.totalBytes);
 
-    while (!sendMspWritePercent(percent, mspProgressInfo.writtenBytes, mspProgressInfo.totalBytes)) {
+    write_Screen_WritingStatus(percent);
+
+    uint8_t reportPercent = percent;
+
+    if (mspWriteUsesGsm()) {
+        reportPercent = percent >= 100 ? 100 : (uint8_t)((percent / 10U) * 10U);
+
+        if (reportPercent == 0 || reportPercent == mspLastServerReportedPercent) {
+            return;
+        }
+    }
+
+    if (reportPercent == mspLastServerReportedPercent) return;
+    mspLastServerReportedPercent = reportPercent;
+
+    while (!sendMspWritePercent(reportPercent, mspProgressInfo.writtenBytes, mspProgressInfo.totalBytes)) {
         if (!waitMspNetworkReconnect()) {
             Serial.println("[MSP REPORT] network reconnect failed");
             return;
@@ -1472,10 +1501,12 @@ static void mspDeleteFileAndRestart(const char* reason)
 static bool writeDownloadedMspToDevice()
 {
     mspWriteWaitNetwork = false;
+    mspWriteNetworkFailed = false;
     mspPendingScreenPercent = -1;
     mspPendingScreenUpdate = false;
     mspProgressInfo = MspWriteProgress{};
     mspLastWritePercent = -1;
+    mspLastServerReportedPercent = -1;
 
     uint32_t firmwareDataBytes = 0;
 
@@ -1540,6 +1571,13 @@ static bool writeDownloadedMspToDevice()
         mspProgressInfo.totalBytes;
 
     mspWriteProgressUpdate();
+
+    if (mspWriteNetworkFailed) {
+        Serial.println("[MSP WRITE] final progress report reconnect failed");
+        stopMspWriteReportTask();
+        waitMspWriteReports();
+        return false;
+    }
 
     stopMspWriteReportTask();
     waitMspWriteReports();
@@ -1755,6 +1793,7 @@ bool startMspUpdate()
  * Notlar:
  * - MSP OTA başlamadan önce eski /msp.txt dosyası silinir
  * - Yeni firmware yoksa durum servera bildirilir
+ * - Giriş durumunda OTA_UPDATE_ACTIVE = 69 yapılır
  * - Başarı durumunda OTA_UPDATE_ACTIVE = 62 yapılır
  * - Hata durumunda OTA_UPDATE_ACTIVE = 63 yapılır
  * - Güncelleme tamamlandıktan sonra geçici dosya silinir
