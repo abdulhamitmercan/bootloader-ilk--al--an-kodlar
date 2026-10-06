@@ -25,8 +25,8 @@
 
 /* ===================== Kullanıcı ayarları ===================== */
 
-#define WIFI_SSID "TurkTelekom_TPA842_2.4GHz"
-#define WIFI_PASS "z9v9eW4gzpL9"
+#define WIFI_SSID "BLUETECH"
+#define WIFI_PASS "Bluetechev"
 
 #define HTTP_HOST "85.105.100.7"
 #define HTTP_PORT 5050
