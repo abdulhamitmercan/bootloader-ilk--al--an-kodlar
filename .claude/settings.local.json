@@ -1,0 +1,12 @@
+{
+  "env": {
+    "CLAUDE_CODE_DISABLE_EXPERIMENTAL_BETAS": "1"
+  },
+  "permissions": {
+    "allow": [
+      "Read(//C/ti/housekeeping_example_pack_1_00_08/**)",
+      "Read(//C/ti/msp430ware_3_80_14_01/**)",
+      "Read(//C/ti/ccs2100/ccs/utils/sysconfig_1.28.0/**)"
+    ]
+  }
+}
